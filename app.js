@@ -1,10 +1,12 @@
 const STORAGE_KEY = 'cloudpulse.monitors.v1';
 
-const exampleWebsites = [
-  { id: 'vercel', name: 'Vercel', url: 'https://vercel.com', status: 'Operational', response: '142', checked: '1 min ago', mark: '▲', style: 'dark' },
-  { id: 'stripe', name: 'Stripe API', url: 'https://api.stripe.com', status: 'Operational', response: '186', checked: '2 min ago', mark: 'S', style: '' },
-  { id: 'linear', name: 'Linear', url: 'https://linear.app', status: 'Operational', response: '224', checked: '4 min ago', mark: 'L', style: 'green' },
-];
+// This Lambda checks only CloudPulse, not arbitrary addresses.
+const CHECK_API_URL = 'https://sy4zfrcxnl35ms2g2cal6nddry0unxcw.lambda-url.eu-north-1.on.aws/';
+const CLOUDPULSE_URL = 'https://d61mkgexvp9pd.cloudfront.net/';
+const cloudpulseMonitor = {
+  id: 'cloudpulse', name: 'CloudPulse', url: CLOUDPULSE_URL,
+  status: 'Not checked', response: '', checked: '', mark: 'C', style: '',
+};
 
 const websiteRows = document.querySelector('#monitor-rows');
 const modal = document.querySelector('#modal-backdrop');
@@ -14,17 +16,23 @@ let websites = loadWebsites();
 let toastTimeout;
 
 function loadWebsites() {
-  const savedWebsites = localStorage.getItem(STORAGE_KEY);
-
-  if (savedWebsites) {
-    try {
-      return JSON.parse(savedWebsites);
-    } catch {
-      localStorage.removeItem(STORAGE_KEY);
-    }
+  let saved = [];
+  try {
+    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+    if (Array.isArray(parsed)) saved = parsed;
+  } catch {
+    // Ignore invalid browser data and start with the CloudPulse monitor.
   }
 
-  return exampleWebsites;
+  // Remove the old demo entries and retain valid user-added websites.
+  const custom = saved.filter((site) => {
+    if (!site || ['vercel', 'stripe', 'linear', 'cloudpulse'].includes(site.id)) return false;
+    try {
+      const url = new URL(site.url);
+      return ['http:', 'https:'].includes(url.protocol) && url.hostname !== new URL(CLOUDPULSE_URL).hostname;
+    } catch { return false; }
+  }).map((site) => ({ ...site, status: 'Not checked', response: '', checked: '' }));
+  return [{ ...cloudpulseMonitor }, ...custom];
 }
 
 function saveWebsites() {
@@ -45,7 +53,7 @@ function getDomain(address) {
 function createWebsiteRow(website) {
   const needsCloudSetup = website.status !== 'Operational';
   const statusStyle = needsCloudSetup ? ' pending' : '';
-  const statusLabel = needsCloudSetup ? 'Not checked' : website.status;
+  const statusLabel = website.status;
   const responseTime = website.response ? `${escapeHtml(website.response)} <small>ms</small>` : '—';
   const lastChecked = website.checked || 'Not checked yet';
 
@@ -60,10 +68,10 @@ function createWebsiteRow(website) {
           </span>
         </div>
       </td>
-      <td><span class="status${statusStyle}"><i></i>${statusLabel}</span></td>
+      <td><span class="status${statusStyle}"><i></i>${escapeHtml(statusLabel)}</span></td>
       <td class="response">${responseTime}</td>
       <td class="last-checked">${escapeHtml(lastChecked)}</td>
-      <td><button class="remove-button" data-remove="${escapeHtml(website.id)}" type="button" aria-label="Remove ${escapeHtml(website.name)}">×</button></td>
+      <td>${website.id === 'cloudpulse' ? '' : `<button class="remove-button" data-remove="${escapeHtml(website.id)}" type="button" aria-label="Remove ${escapeHtml(website.name)}">×</button>`}</td>
     </tr>`;
 }
 
@@ -73,6 +81,9 @@ function renderWebsites() {
   const onlineCount = websites.filter((website) => website.status === 'Operational').length;
   document.querySelector('#monitor-count').textContent = websites.length;
   document.querySelector('#online-count').innerHTML = `${onlineCount} <small>of ${websites.length}</small>`;
+  const measured = websites.filter((site) => site.status === 'Operational' && site.response !== '');
+  const average = measured.length ? Math.round(measured.reduce((sum, site) => sum + Number(site.response), 0) / measured.length) : '—';
+  document.querySelector('#average-response').textContent = average;
 }
 
 function showToast(message) {
@@ -149,7 +160,7 @@ form.addEventListener('submit', (event) => {
 
 websiteRows.addEventListener('click', (event) => {
   const removeButton = event.target.closest('[data-remove]');
-  if (!removeButton) return;
+  if (!removeButton || removeButton.dataset.remove === 'cloudpulse') return;
 
   websites = websites.filter((website) => website.id !== removeButton.dataset.remove);
   saveWebsites();
@@ -157,8 +168,43 @@ websiteRows.addEventListener('click', (event) => {
   showToast('Website removed from this browser.');
 });
 
-document.querySelector('#refresh-button').addEventListener('click', () => {
-  showToast('Automatic checks will be connected in the AWS steps.');
+// Request one real check when the user clicks Refresh.
+const refreshButton = document.querySelector('#refresh-button');
+refreshButton.addEventListener('click', async () => {
+  if (refreshButton.disabled) return;
+  refreshButton.disabled = true;
+  refreshButton.textContent = 'Checking…';
+  const monitor = websites.find((site) => site.id === 'cloudpulse');
+  monitor.status = 'Checking…';
+  monitor.response = '';
+  monitor.checked = '';
+  renderWebsites();
+
+  try {
+    const response = await fetch(CHECK_API_URL, { signal: AbortSignal.timeout(10000) });
+    if (!response.ok) throw new Error('Check service returned an error');
+    const result = await response.json();
+    if (result.url !== CLOUDPULSE_URL ||
+        !['Operational', 'HTTP error', 'Unreachable'].includes(result.status) ||
+        !Number.isFinite(result.responseTimeMs) || result.responseTimeMs < 0 ||
+        !Number.isFinite(Date.parse(result.checkedAt))) {
+      throw new Error('Invalid check result');
+    }
+    monitor.status = result.status;
+    monitor.response = result.status === 'Unreachable' ? '' : String(result.responseTimeMs);
+    monitor.checked = new Date(result.checkedAt).toLocaleString();
+    showToast(result.status === 'Operational' ? 'CloudPulse check completed.' : 'CloudPulse check reported a problem.');
+  } catch {
+    // An API/CORS error does not prove that the monitored website is down.
+    monitor.status = 'Check failed';
+    monitor.response = '';
+    monitor.checked = '';
+    showToast('Could not get a check result. Please try again.');
+  } finally {
+    renderWebsites();
+    refreshButton.disabled = false;
+    refreshButton.innerHTML = '↻ <span>Refresh</span>';
+  }
 });
 
 renderWebsites();

@@ -19,7 +19,7 @@
           <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
           <span>Cloud<span>Pulse</span></span>
         </a>
-        <span class="demo-label"><i></i> DEMO DATA</span>
+        <span class="demo-label"><i></i> MANUAL CHECKS</span>
       </header>
 
       <section class="intro" id="top">
@@ -34,16 +34,16 @@
       <section class="summary" aria-label="Monitoring summary">
         <article class="summary-card">
           <span class="summary-icon purple-icon" aria-hidden="true">◉</span>
-          <div><p>Websites tracked</p><strong id="monitor-count">3</strong></div>
+          <div><p>Websites tracked</p><strong id="monitor-count">1</strong></div>
         </article>
         <article class="summary-card">
           <span class="summary-icon green-icon" aria-hidden="true">✓</span>
-          <div><p>Currently online</p><strong id="online-count">3 <small>of 3</small></strong></div>
+          <div><p>Currently online</p><strong id="online-count">0 <small>of 1</small></strong></div>
         </article>
         <article class="summary-card response-summary">
           <span class="summary-icon blue-icon" aria-hidden="true">ϟ</span>
-          <div><p>Average response</p><strong>184 <small>ms</small></strong></div>
-          <span class="summary-note">Sample value</span>
+          <div><p>Average response</p><strong><span id="average-response">—</span> <small>ms</small></strong></div>
+          <span class="summary-note">Successful checks</span>
         </article>
       </section>
 
@@ -58,7 +58,7 @@
             <tbody id="monitor-rows"></tbody>
           </table>
         </div>
-        <p class="panel-foot"><span class="demo-dot"></span> Example data for now · AWS monitoring will be added step by step</p>
+        <p class="panel-foot"><span class="demo-dot"></span> Refresh checks CloudPulse only · Other websites are not checked yet</p>
       </section>
 
       <footer class="footer"><span>CloudPulse</span><span>Learning cloud by building a real project.</span></footer>
@@ -70,7 +70,7 @@
         <span class="modal-mark" aria-hidden="true">＋</span>
         <p class="eyebrow">NEW WEBSITE</p>
         <h2 id="modal-title">Add a website to follow</h2>
-        <p class="modal-copy">We’ll show it in your list. Automatic checks come in a later step.</p>
+        <p class="modal-copy">Saved in this browser. Only CloudPulse supports live checks for now.</p>
         <form id="monitor-form">
           <label for="site-name">Name</label>
           <input id="site-name" name="name" placeholder="My portfolio" maxlength="36" required />
