@@ -1,6 +1,6 @@
 const STORAGE_KEY = 'cloudpulse.monitors.v1';
 
-// This Lambda checks only CloudPulse, not arbitrary addresses.
+// The Lambda accepts one public website address per request.
 const CHECK_API_URL = 'https://sy4zfrcxnl35ms2g2cal6nddry0unxcw.lambda-url.eu-north-1.on.aws/';
 const CLOUDPULSE_URL = 'https://d61mkgexvp9pd.cloudfront.net/';
 const cloudpulseMonitor = {
@@ -130,8 +130,8 @@ form.addEventListener('submit', (event) => {
     return;
   }
 
-  if (!['http:', 'https:'].includes(parsedAddress.protocol)) {
-    errorMessage.textContent = 'The address must start with http:// or https://.';
+  if (!['http:', 'https:'].includes(parsedAddress.protocol) || parsedAddress.username || parsedAddress.password || parsedAddress.port || address.length > 2048) {
+    errorMessage.textContent = 'Use HTTP or HTTPS without a username, password, or custom port.';
     return;
   }
 
@@ -155,12 +155,12 @@ form.addEventListener('submit', (event) => {
   saveWebsites();
   renderWebsites();
   closeModal();
-  showToast('Website added. Automatic checks come in a later step.');
+  showToast('Website added. Click Refresh to check it.');
 });
 
 websiteRows.addEventListener('click', (event) => {
   const removeButton = event.target.closest('[data-remove]');
-  if (!removeButton || removeButton.dataset.remove === 'cloudpulse') return;
+  if (!removeButton || removeButton.dataset.remove === 'cloudpulse' || refreshButton.disabled) return;
 
   websites = websites.filter((website) => website.id !== removeButton.dataset.remove);
   saveWebsites();
@@ -168,39 +168,50 @@ websiteRows.addEventListener('click', (event) => {
   showToast('Website removed from this browser.');
 });
 
-// Request one real check when the user clicks Refresh.
+// Refresh checks each listed website in order.
 const refreshButton = document.querySelector('#refresh-button');
 refreshButton.addEventListener('click', async () => {
   if (refreshButton.disabled) return;
   refreshButton.disabled = true;
   refreshButton.textContent = 'Checking…';
-  const monitor = websites.find((site) => site.id === 'cloudpulse');
-  monitor.status = 'Checking…';
-  monitor.response = '';
-  monitor.checked = '';
+  const monitors = [...websites];
+  document.querySelector('#open-modal').disabled = true;
+  for (const monitor of monitors) {
+    monitor.status = 'Waiting…';
+    monitor.response = '';
+    monitor.checked = '';
+  }
   renderWebsites();
 
   try {
-    const response = await fetch(CHECK_API_URL, { signal: AbortSignal.timeout(10000) });
-    if (!response.ok) throw new Error('Check service returned an error');
-    const result = await response.json();
-    if (result.url !== CLOUDPULSE_URL ||
-        !['Operational', 'HTTP error', 'Unreachable'].includes(result.status) ||
-        !Number.isFinite(result.responseTimeMs) || result.responseTimeMs < 0 ||
-        !Number.isFinite(Date.parse(result.checkedAt))) {
-      throw new Error('Invalid check result');
+    // Sequential checks keep the number of simultaneous Lambda calls small.
+    for (const monitor of monitors) {
+      monitor.status = 'Checking…';
+      renderWebsites();
+      try {
+        const response = await fetch(`${CHECK_API_URL}?url=${encodeURIComponent(monitor.url)}`, { signal: AbortSignal.timeout(10000) });
+        if (!response.ok) throw new Error('Check service returned an error');
+        const result = await response.json();
+        if (result.url !== (() => { const url = new URL(monitor.url); url.hash = ''; return url.href; })() ||
+            !['Operational', 'HTTP error', 'Unreachable'].includes(result.status) ||
+            !Number.isFinite(result.responseTimeMs) || result.responseTimeMs < 0 ||
+            !Number.isFinite(Date.parse(result.checkedAt))) {
+          throw new Error('Invalid check result');
+        }
+        monitor.status = result.status;
+        monitor.response = result.status === 'Unreachable' ? '' : String(result.responseTimeMs);
+        monitor.checked = new Date(result.checkedAt).toLocaleString();
+      } catch {
+        // An API/CORS error does not prove that the monitored website is down.
+        monitor.status = 'Check failed';
+        monitor.response = '';
+        monitor.checked = '';
+      }
+      renderWebsites();
     }
-    monitor.status = result.status;
-    monitor.response = result.status === 'Unreachable' ? '' : String(result.responseTimeMs);
-    monitor.checked = new Date(result.checkedAt).toLocaleString();
-    showToast(result.status === 'Operational' ? 'CloudPulse check completed.' : 'CloudPulse check reported a problem.');
-  } catch {
-    // An API/CORS error does not prove that the monitored website is down.
-    monitor.status = 'Check failed';
-    monitor.response = '';
-    monitor.checked = '';
-    showToast('Could not get a check result. Please try again.');
+    showToast('Checks completed. See each website for its result.');
   } finally {
+    document.querySelector('#open-modal').disabled = false;
     renderWebsites();
     refreshButton.disabled = false;
     refreshButton.innerHTML = '↻ <span>Refresh</span>';
