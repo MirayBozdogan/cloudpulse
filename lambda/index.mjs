@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import http from 'node:http';
 import https from 'node:https';
 import { lookup } from 'node:dns';
@@ -66,28 +67,64 @@ const jsonResponse = (statusCode, result) => ({
   body: JSON.stringify(result),
 });
 
-export const handler = async (event = {}, context = {}) => {
-  let url;
-  try {
-    url = validateUrl(event.queryStringParameters?.url ?? DEFAULT_URL).href;
-  } catch {
-    return jsonResponse(400, { error: 'Enter a public HTTP or HTTPS domain without credentials or a custom port.' });
-  }
-  const startedAt = performance.now();
-  const checkedAt = new Date().toISOString();
-  // Leave time for Lambda to return a response before its execution limit.
-  const budget = Math.max(1, Math.min(5000, (context.getRemainingTimeInMillis?.() ?? 6000) - 500));
-  try {
-    const statusCode = await checkWebsite(url, { signal: AbortSignal.timeout(budget) });
-    return jsonResponse(200, {
-      url, status: statusCode >= 200 && statusCode < 300 ? 'Operational' : 'HTTP error',
-      statusCode, responseTimeMs: Math.round(performance.now() - startedAt), checkedAt,
-    });
-  } catch {
-    return jsonResponse(200, {
-      url, status: 'Unreachable', statusCode: null,
-      responseTimeMs: Math.round(performance.now() - startedAt), checkedAt,
-      error: 'Request failed, timed out, or reached a blocked destination',
-    });
-  }
-};
+// The SDK is supplied by the Lambda Node.js runtime. Load it only when saving.
+let database;
+export async function saveCheck(result) {
+  const { DynamoDBClient, PutItemCommand } = await import('@aws-sdk/client-dynamodb');
+  database ??= new DynamoDBClient({ maxAttempts: 1 });
+  const checkId = `${result.checkedAt}#${randomUUID()}`;
+  const Item = {
+    url: { S: result.url },
+    checkId: { S: checkId },
+    checkedAt: { S: result.checkedAt },
+    status: { S: result.status },
+    responseTimeMs: { N: String(result.responseTimeMs) },
+    statusCode: result.statusCode === null ? { NULL: true } : { N: String(result.statusCode) },
+  };
+  if (result.error) Item.error = { S: result.error };
+  await database.send(new PutItemCommand({
+    TableName: process.env.CHECKS_TABLE || 'cloudpulse-checks',
+    Item,
+    ConditionExpression: 'attribute_not_exists(checkId)',
+  }), { abortSignal: AbortSignal.timeout(1500) });
+  return checkId;
+}
+
+export function createHandler({ check = checkWebsite, save = saveCheck } = {}) {
+  return async (event = {}, context = {}) => {
+    let url;
+    try {
+      url = validateUrl(event.queryStringParameters?.url ?? DEFAULT_URL).href;
+    } catch {
+      return jsonResponse(400, { error: 'Enter a public HTTP or HTTPS domain without credentials or a custom port.' });
+    }
+    const startedAt = performance.now();
+    const checkedAt = new Date().toISOString();
+    // Reserve time for the database write and response as well as the HTTP check.
+    const budget = Math.max(1, Math.min(5000, (context.getRemainingTimeInMillis?.() ?? 8000) - 2500));
+    let result;
+    try {
+      const statusCode = await check(url, { signal: AbortSignal.timeout(budget) });
+      result = {
+        url, status: statusCode >= 200 && statusCode < 300 ? 'Operational' : 'HTTP error',
+        statusCode, responseTimeMs: Math.round(performance.now() - startedAt), checkedAt,
+      };
+    } catch {
+      result = {
+        url, status: 'Unreachable', statusCode: null,
+        responseTimeMs: Math.round(performance.now() - startedAt), checkedAt,
+        error: 'Request failed, timed out, or reached a blocked destination',
+      };
+    }
+    try {
+      const checkId = await save(result);
+      return jsonResponse(200, { ...result, checkId, historySaved: true });
+    } catch (error) {
+      // Storage failures must not be reported as a website outage or successful save.
+      console.error('Could not save check history:', error.name);
+      return jsonResponse(503, { ...result, historySaved: false, storageError: 'Could not save check history' });
+    }
+  };
+}
+
+export const handler = createHandler();

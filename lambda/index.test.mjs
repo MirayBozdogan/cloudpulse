@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { validateUrl, checkWebsite, publicLookup, handler } from './index.mjs';
+import { validateUrl, checkWebsite, publicLookup, handler, createHandler } from './index.mjs';
 
 test('rejects private literals, alternate IP spelling, credentials and custom ports', () => {
   for (const value of ['http://127.1', 'http://2130706433', 'http://0x7f000001', 'http://[::1]', 'http://169.254.169.254/', 'http://localhost', 'http://host.internal', 'https://user:pass@example.com', 'https://example.com:444', 'file:///etc/passwd']) {
@@ -44,4 +44,39 @@ test('invalid URL returns JSON 400 without performing a request', async () => {
   const result=await handler({queryStringParameters:{url:'http://127.0.0.1'}});
   assert.equal(result.statusCode,400);
   assert(JSON.parse(result.body).error);
+});
+
+
+test('persists successful, HTTP error and unreachable results before responding', async () => {
+  for (const code of [200, 503, null]) {
+    const saved = [];
+    const run = createHandler({
+      check: async () => { if (code === null) throw new Error('timeout'); return code; },
+      save: async (result) => { saved.push(result); return 'unique-check-id'; },
+    });
+    const response = await run({queryStringParameters:{url:'https://example.com/'}});
+    const body = JSON.parse(response.body);
+    assert.equal(response.statusCode, 200);
+    assert.equal(saved.length, 1);
+    assert.equal(saved[0].statusCode, code);
+    assert.equal(body.historySaved, true);
+    assert.equal(body.checkId, 'unique-check-id');
+    assert.equal(body.status, code === null ? 'Unreachable' : code === 200 ? 'Operational' : 'HTTP error');
+  }
+});
+
+test('storage failure preserves the measurement and reports failure', async () => {
+  const run = createHandler({check: async()=>200, save: async()=>{throw new Error('denied');}});
+  const response = await run();
+  const body = JSON.parse(response.body);
+  assert.equal(response.statusCode, 503);
+  assert.equal(body.status, 'Operational');
+  assert.equal(body.historySaved, false);
+});
+
+test('invalid addresses never write history', async () => {
+  let writes = 0;
+  const run = createHandler({save: async()=>{writes++;}});
+  assert.equal((await run({queryStringParameters:{url:'http://127.0.0.1'}})).statusCode,400);
+  assert.equal(writes,0);
 });
