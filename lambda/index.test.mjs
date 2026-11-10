@@ -80,3 +80,24 @@ test('invalid addresses never write history', async () => {
   assert.equal((await run({queryStringParameters:{url:'http://127.0.0.1'}})).statusCode,400);
   assert.equal(writes,0);
 });
+
+test('history reads only the requested URL without checking or writing', async () => {
+  let queried;
+  const run = createHandler({check:async()=>{throw new Error('must not check');},save:async()=>{throw new Error('must not write');},history:async(url)=>{queried=url;return [{status:'Operational'}];}});
+  const response=await run({queryStringParameters:{action:'history',url:'https://example.com/'}});
+  assert.equal(response.statusCode,200);
+  assert.equal(queried,'https://example.com/');
+  assert.equal(JSON.parse(response.body).items.length,1);
+});
+
+test('history failure returns a retryable error, not an empty history', async () => {
+  const run=createHandler({history:async()=>{throw new Error('denied');}});
+  const response=await run({queryStringParameters:{action:'history'}});
+  assert.equal(response.statusCode,503);
+  assert.match(JSON.parse(response.body).error,/retry/i);
+});
+
+test('unknown actions are rejected without writes', async () => {
+  const run=createHandler({save:async()=>{throw new Error('must not write');}});
+  assert.equal((await run({queryStringParameters:{action:'delete'}})).statusCode,400);
+});

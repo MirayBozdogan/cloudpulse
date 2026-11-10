@@ -52,7 +52,7 @@ function getDomain(address) {
 
 function createWebsiteRow(website) {
   const needsCloudSetup = website.status !== 'Operational';
-  const statusStyle = needsCloudSetup ? ' pending' : '';
+  const statusStyle = ['HTTP error', 'Unreachable', 'Check failed', 'Invalid address'].includes(website.status) ? ' error' : needsCloudSetup ? ' pending' : '';
   const statusLabel = website.status;
   const responseTime = website.response ? `${escapeHtml(website.response)} <small>ms</small>` : '—';
   const lastChecked = website.checked || 'Not checked yet';
@@ -68,10 +68,10 @@ function createWebsiteRow(website) {
           </span>
         </div>
       </td>
-      <td><span class="status${statusStyle}"><i></i>${escapeHtml(statusLabel)}</span></td>
+      <td><span class="status${statusStyle}"><i></i>${escapeHtml(statusLabel)}</span>${website.detail ? `<small class="row-detail">${escapeHtml(website.detail)}</small>` : ''}</td>
       <td class="response">${responseTime}</td>
       <td class="last-checked">${escapeHtml(lastChecked)}</td>
-      <td>${website.id === 'cloudpulse' ? '' : `<button class="remove-button" data-remove="${escapeHtml(website.id)}" type="button" aria-label="Remove ${escapeHtml(website.name)}">×</button>`}</td>
+      <td><button class="history-button" data-history="${escapeHtml(website.id)}" type="button">History</button>${website.id === 'cloudpulse' ? '' : `<button class="remove-button" data-remove="${escapeHtml(website.id)}" type="button" aria-label="Remove ${escapeHtml(website.name)}">×</button>`}</td>
     </tr>`;
 }
 
@@ -159,6 +159,15 @@ form.addEventListener('submit', (event) => {
 });
 
 websiteRows.addEventListener('click', (event) => {
+  const historyButton = event.target.closest('[data-history]');
+  if (historyButton) {
+    const site = websites.find((site) => site.id === historyButton.dataset.history);
+    if (site) {
+      loadHistory(site);
+      document.querySelector('#history-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    return;
+  }
   const removeButton = event.target.closest('[data-remove]');
   if (!removeButton || removeButton.dataset.remove === 'cloudpulse' || refreshButton.disabled) return;
 
@@ -177,6 +186,7 @@ refreshButton.addEventListener('click', async () => {
   const monitors = [...websites];
   document.querySelector('#open-modal').disabled = true;
   for (const monitor of monitors) {
+    monitor.detail = '';
     monitor.status = 'Waiting…';
     monitor.response = '';
     monitor.checked = '';
@@ -185,13 +195,20 @@ refreshButton.addEventListener('click', async () => {
 
   try {
     // Sequential checks keep the number of simultaneous Lambda calls small.
-    for (const monitor of monitors) {
+    for (const [index, monitor] of monitors.entries()) {
+      refreshButton.textContent = `Checking ${index + 1} of ${monitors.length}…`;
       monitor.status = 'Checking…';
       renderWebsites();
       try {
         const response = await fetch(`${CHECK_API_URL}?url=${encodeURIComponent(monitor.url)}`, { signal: AbortSignal.timeout(10000) });
-        if (!response.ok) throw new Error('Check service returned an error');
         const result = await response.json();
+        if (response.status === 400) {
+          monitor.status = 'Invalid address';
+          monitor.detail = result.error || 'This address cannot be checked.';
+          renderWebsites();
+          continue;
+        }
+        if (!response.ok && !(response.status === 503 && result.historySaved === false)) throw new Error('Check service returned an error');
         if (result.url !== (() => { const url = new URL(monitor.url); url.hash = ''; return url.href; })() ||
             !['Operational', 'HTTP error', 'Unreachable'].includes(result.status) ||
             !Number.isFinite(result.responseTimeMs) || result.responseTimeMs < 0 ||
@@ -201,9 +218,13 @@ refreshButton.addEventListener('click', async () => {
         monitor.status = result.status;
         monitor.response = result.status === 'Unreachable' ? '' : String(result.responseTimeMs);
         monitor.checked = new Date(result.checkedAt).toLocaleString();
-      } catch {
+        monitor.detail = result.historySaved === false ? 'Check completed, but history was not saved. Retry Refresh.' :
+          result.status === 'HTTP error' ? `Website returned HTTP ${result.statusCode}.` :
+          result.status === 'Unreachable' ? 'No response: timeout, connection failure, or blocked destination.' : '';
+      } catch (error) {
         // An API/CORS error does not prove that the monitored website is down.
         monitor.status = 'Check failed';
+        monitor.detail = error.name === 'TimeoutError' ? 'Check service timed out. Retry Refresh.' : 'Could not reach the check service. Check your connection and retry.';
         monitor.response = '';
         monitor.checked = '';
       }
@@ -215,7 +236,56 @@ refreshButton.addEventListener('click', async () => {
     renderWebsites();
     refreshButton.disabled = false;
     refreshButton.innerHTML = '↻ <span>Refresh</span>';
+    if (selectedHistorySite && !document.querySelector('#history-panel').hidden) loadHistory(selectedHistorySite);
   }
 });
 
 renderWebsites();
+
+// Reading history never starts a new website check.
+let selectedHistorySite;
+let historyController;
+let historyRequest = 0;
+async function loadHistory(site) {
+  selectedHistorySite = site;
+  historyController?.abort();
+  historyController = new AbortController();
+  const requestId = ++historyRequest;
+  const controller = historyController;
+  const timer = setTimeout(() => controller.abort(), 10000);
+  const panel = document.querySelector('#history-panel');
+  const message = document.querySelector('#history-message');
+  const rows = document.querySelector('#history-rows');
+  const retry = document.querySelector('#history-retry');
+  panel.hidden = false;
+  document.querySelector('#history-site').textContent = site.url;
+  message.textContent = 'Loading saved checks…';
+  rows.innerHTML = '';
+  retry.disabled = true;
+  try {
+    const response = await fetch(`${CHECK_API_URL}?action=history&url=${encodeURIComponent(site.url)}`, { signal: historyController.signal });
+    if (!response.ok) throw new Error('History unavailable');
+    const result = await response.json();
+    if (!Array.isArray(result.items)) throw new Error('Invalid history response');
+    if (requestId !== historyRequest) return;
+    message.textContent = result.items.length ? 'Latest 20 saved checks, newest first. Reloading history does not run a new check.' : 'No saved checks yet. Click Refresh to create the first one.';
+    rows.innerHTML = result.items.map((item) => `<tr>
+      <td>${escapeHtml(new Date(item.checkedAt).toLocaleString())}</td>
+      <td>${escapeHtml(item.status)}</td>
+      <td>${escapeHtml(item.statusCode ?? '—')}</td>
+      <td>${escapeHtml(item.responseTimeMs)} ms</td>
+    </tr>`).join('');
+  } catch (error) {
+    if (requestId !== historyRequest) return;
+    message.textContent = 'History could not be loaded. Check your connection and choose Reload history.';
+  } finally {
+    clearTimeout(timer);
+    if (requestId === historyRequest) retry.disabled = false;
+  }
+}
+document.querySelector('#history-retry').addEventListener('click', () => { if (selectedHistorySite) loadHistory(selectedHistorySite); });
+document.querySelector('#history-close').addEventListener('click', () => {
+  historyRequest++;
+  historyController?.abort();
+  document.querySelector('#history-panel').hidden = true;
+});

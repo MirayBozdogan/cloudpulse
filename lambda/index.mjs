@@ -90,7 +90,29 @@ export async function saveCheck(result) {
   return checkId;
 }
 
-export function createHandler({ check = checkWebsite, save = saveCheck } = {}) {
+// Query one site's recent records; never scan the entire table.
+export async function readHistory(url) {
+  const { DynamoDBClient, QueryCommand } = await import('@aws-sdk/client-dynamodb');
+  database ??= new DynamoDBClient({ maxAttempts: 1 });
+  const response = await database.send(new QueryCommand({
+    TableName: process.env.CHECKS_TABLE || 'cloudpulse-checks',
+    KeyConditionExpression: '#url = :url',
+    ExpressionAttributeNames: { '#url': 'url', '#status': 'status' },
+    ExpressionAttributeValues: { ':url': { S: url } },
+    ProjectionExpression: 'checkId, checkedAt, #status, statusCode, responseTimeMs',
+    ScanIndexForward: false,
+    Limit: 20,
+  }), { abortSignal: AbortSignal.timeout(2000) });
+  return (response.Items || []).map((item) => ({
+    checkId: item.checkId.S,
+    checkedAt: item.checkedAt.S,
+    status: item.status.S,
+    statusCode: item.statusCode?.N === undefined ? null : Number(item.statusCode.N),
+    responseTimeMs: Number(item.responseTimeMs.N),
+  }));
+}
+
+export function createHandler({ check = checkWebsite, save = saveCheck, history = readHistory } = {}) {
   return async (event = {}, context = {}) => {
     let url;
     try {
@@ -98,6 +120,16 @@ export function createHandler({ check = checkWebsite, save = saveCheck } = {}) {
     } catch {
       return jsonResponse(400, { error: 'Enter a public HTTP or HTTPS domain without credentials or a custom port.' });
     }
+    const action = event.queryStringParameters?.action || 'check';
+    if (action === 'history') {
+      try {
+        return jsonResponse(200, { url, items: await history(url) });
+      } catch (error) {
+        console.error('Could not read check history:', error.name);
+        return jsonResponse(503, { error: 'History is temporarily unavailable. Please retry.' });
+      }
+    }
+    if (action !== 'check') return jsonResponse(400, { error: 'Unknown action' });
     const startedAt = performance.now();
     const checkedAt = new Date().toISOString();
     // Reserve time for the database write and response as well as the HTTP check.

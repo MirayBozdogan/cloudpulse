@@ -10,7 +10,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="styles.css" />
-    <script src="app.js" defer></script>
+    <script src="app.js?v=history-2" defer></script>
   </head>
   <body>
     <main class="page">
@@ -54,11 +54,20 @@
         </div>
         <div class="table-scroll">
           <table>
-            <thead><tr><th>WEBSITE</th><th>STATUS</th><th>RESPONSE TIME</th><th>LAST CHECKED</th><th></th></tr></thead>
+            <thead><tr><th>WEBSITE</th><th>STATUS</th><th>RESPONSE TIME</th><th>LAST CHECKED</th><th>ACTIONS</th></tr></thead>
             <tbody id="monitor-rows"></tbody>
           </table>
         </div>
         <p class="panel-foot"><span class="demo-dot"></span> Refresh checks listed websites · Results are from the latest manual check</p>
+      </section>
+
+      <section class="monitor-panel" id="history-panel" aria-labelledby="history-title" hidden>
+        <div class="panel-heading">
+          <div><h2 id="history-title">Check history</h2><p id="history-site"></p></div>
+          <div><button class="button button-quiet" id="history-retry" type="button">Reload history</button><button class="button button-quiet" id="history-close" type="button">Close</button></div>
+        </div>
+        <p id="history-message" class="panel-foot" role="status" aria-live="polite"></p>
+        <div class="table-scroll"><table><thead><tr><th>CHECKED AT</th><th>STATUS</th><th>HTTP</th><th>RESPONSE TIME</th></tr></thead><tbody id="history-rows"></tbody></table></div>
       </section>
 
       <footer class="footer"><span>CloudPulse</span><span>Learning cloud by building a real project.</span></footer>

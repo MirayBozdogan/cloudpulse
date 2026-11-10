@@ -110,3 +110,11 @@ tbody tr:last-child td { border-bottom: 0; }
   .table-scroll table { min-width: 620px; }
   .footer { flex-direction: column; }
 }
+
+button:disabled { cursor: wait; opacity: .55; }
+.status.error { background: #fff0f1; color: #b84250; }
+.status.error i { background: #b84250; }
+.row-detail { display: block; max-width: 220px; margin-top: 5px; white-space: normal; line-height: 1.5; color: #8b6c36; }
+.history-button { border: 0; background: transparent; color: var(--purple); font-size: 10px; padding: 8px; }
+#history-panel[hidden] { display: none; }
+#history-message { white-space: normal; line-height: 1.6; }
